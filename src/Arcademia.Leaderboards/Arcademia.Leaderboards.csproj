@@ -11,7 +11,7 @@
 
   <PropertyGroup>
     <PackageId>Arcademia.Leaderboards</PackageId>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Authors>Arcademia</Authors>
     <Description>Submit high scores and let players claim them to their Arcademia account, from any .NET game or tool running on an Arcademia arcade cabinet or on a developer's own machine (sandbox mode). See the online SDK docs for full usage.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
