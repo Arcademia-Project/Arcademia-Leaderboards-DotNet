@@ -23,7 +23,7 @@ internal static class Program
         while (true)
         {
             Console.WriteLine();
-            Console.WriteLine("1) Ping  2) Submit random score  3) Fetch test scores  4) Claim last score  5) Quit");
+            Console.WriteLine("1) Ping  2) Submit random score  3) Fetch test scores  4) Claim last score  5) Name last score  6) Quit");
             Console.Write("> ");
             switch (Console.ReadLine())
             {
@@ -32,7 +32,8 @@ internal static class Program
                     break;
                 case "2":
                     var value = new Random().Next(100, 100000);
-                    var result = await ArcademiaLeaderboards.SubmitScoreAsync(boardSlug, value, "REX");
+                    var result = await ArcademiaLeaderboards.SubmitScoreAsync(
+                        boardSlug, value, metadataJson: "{\"level\":3,\"character\":\"rex\"}");
                     if (result.Success && !string.IsNullOrEmpty(result.ScoreId))
                         lastScoreId = result.ScoreId;
                     Console.WriteLine(result.ToString());
@@ -46,7 +47,7 @@ internal static class Program
                     }
                     Console.WriteLine($"{scores.BoardName} ({scores.Total} test scores)");
                     foreach (var s in scores.Scores)
-                        Console.WriteLine($"    #{s.Rank}  {s.PlayerName}  {s.Value}");
+                        Console.WriteLine($"    #{s.Rank}  {s.PlayerName}{(s.Claimed ? " (account)" : "")}  {s.Value}  {s.Metadata}");
                     break;
                 case "4":
                     if (string.IsNullOrEmpty(lastScoreId))
@@ -55,9 +56,18 @@ internal static class Program
                         break;
                     }
                     Console.WriteLine("Requesting claim for " + lastScoreId + "...");
-                    Console.WriteLine((await ArcademiaLeaderboards.RequestClaimAsync(lastScoreId)).ToString());
+                    Console.WriteLine((await ArcademiaLeaderboards.RequestClaimAsync(lastScoreId, url => Console.WriteLine("Open this link to claim: " + url))).ToString());
                     break;
                 case "5":
+                    if (string.IsNullOrEmpty(lastScoreId))
+                    {
+                        Console.WriteLine("Submit a score first.");
+                        break;
+                    }
+                    var name = Prompt("Player name", "REX");
+                    Console.WriteLine((await ArcademiaLeaderboards.SetPlayerNameAsync(lastScoreId, name)).ToString());
+                    break;
+                case "6":
                     return;
             }
         }

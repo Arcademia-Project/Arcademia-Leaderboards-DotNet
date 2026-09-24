@@ -30,7 +30,7 @@ Targets `netstandard2.0`, so it works on .NET Framework 4.6.1+, .NET
 | When | Game was started by the Arcademia launcher on an arcade machine | Anywhere else: your dev machine, a build you're testing, CI |
 | Auth | Nothing you set. The launcher and the machine's credentials handle it | Your game's API key (`apiKey` in config) |
 | Scores land on | The live, public leaderboard | The **Test area** only. Visible to you in the dashboard, never public |
-| Claiming | Works, shows a QR popup on the cabinet | Not available (`RequestClaimAsync` returns `rejected` immediately) |
+| Claiming | Shows a QR code on the cabinet | Gives you a link to open in your browser instead of a QR code |
 
 You don't choose the mode yourself. `ArcademiaLeaderboards` figures it out
 automatically by checking for environment variables the launcher sets on
@@ -42,9 +42,9 @@ behaves correctly in both places.
 ```csharp
 using Arcademia.Leaderboards;
 
-async Task OnGameOver(long finalScore, string playerName)
+async void OnGameOver(long finalScore)
 {
-    var result = await ArcademiaLeaderboards.SubmitScoreAsync("highscore", finalScore, playerName);
+    var result = await ArcademiaLeaderboards.SubmitScoreAsync("highscore", finalScore);
 
     if (result.Success)
         Console.WriteLine($"Saved (#{result.Rank}), mode = {result.Mode}");
@@ -54,6 +54,47 @@ async Task OnGameOver(long finalScore, string playerName)
 ```
 
 That covers a minimal integration. Everything below is optional.
+
+## Typed name or account
+
+Once a score is submitted, the player can put a name on it in one of two
+ways. Offer them the choice and use whichever they pick:
+
+1. **Type a name in your game.** Pass it to `SubmitScoreAsync`, or call
+   `SetPlayerNameAsync` afterwards if you submitted first.
+2. **Save it to their Arcademia account.** Call `RequestClaimAsync`. The
+   player scans a QR code on the cabinet and signs in on their phone, and
+   the call returns their account's username so your game can show it.
+
+They don't need to do both. A claimed score always shows the account's
+username, so there's no point asking for a typed name as well.
+
+```csharp
+var result = await ArcademiaLeaderboards.SubmitScoreAsync("highscore", finalScore);
+
+if (playerChoseAccount)
+{
+    var claim = await ArcademiaLeaderboards.RequestClaimAsync(result.ScoreId);
+    if (claim.Success)
+    {
+        ShowName(claim.PlayerName);
+        return;
+    }
+}
+
+var typed = await AskForNameInGame();
+var named = await ArcademiaLeaderboards.SetPlayerNameAsync(result.ScoreId, typed);
+ShowName(named.Success ? named.PlayerName : typed);
+```
+
+If the player cancels the QR code or it times out, the score is still
+there under the default name `"Player"`, so you can fall back to your own
+name entry as the example does.
+
+When you read scores back, each `BoardScore` tells you which kind of name
+it has. `Claimed` is `true` when the name is a verified Arcademia
+username, and `false` when it's a name someone typed in a game. You could
+use it to put a badge next to verified players, for example.
 
 ## Configuration
 
@@ -125,10 +166,13 @@ Submits a score to the named board.
   milliseconds, the dashboard formats it back for display.
 - `playerName`: free text, any characters, up to 32. Server-side
   profanity filtering applies. Defaults to `"Player"` if you leave it out.
-- `metadataJson`: an optional raw JSON object string (max 2 KB), e.g.
-  `"{\"level\":\"3-2\",\"character\":\"fox\"}"`. It gets stored alongside
-  the score and isn't shown to players, useful for support or anti-cheat
-  review later.
+  Leave it out if the player might claim the score instead (see *Typed
+  name or account* above).
+- `metadataJson`: an optional JSON object string (max 2 KB), e.g.
+  `"{\"level\":\"3-2\",\"character\":\"fox\"}"`. It's stored with the score
+  and comes back as `BoardScore.Metadata` whenever your game reads scores,
+  so you can show things like the level or character next to each entry.
+  See *Metadata* below.
 - `scoreId`: normally you can leave this `null` and a `Guid` gets
   generated for you. Passing your own lets you safely retry a submission
   (say, after a network blip) without creating a duplicate, since the
@@ -147,28 +191,54 @@ your game's point of view, there's nothing extra to handle.
 
 Hang on to `result.ScoreId` if you plan to offer a claim next.
 
-### `RequestClaimAsync(scoreId)` (returns `Task<ClaimResult>`)
-Offers a just-submitted live score for the player to save to their
-Arcademia account. This shows a QR code popup on the cabinet and won't
-return until the player scans it, cancels, or about five minutes pass, so
-call it from a "Save my score?" prompt handler rather than your main
-update loop.
+### `SetPlayerNameAsync(scoreId, playerName)` (returns `Task<NameResult>`)
+Sets or changes the name on a score submitted earlier in the same play
+session. Use it when the player types their name after the score was
+submitted, or after a claim was cancelled or timed out.
+
+```csharp
+var named = await ArcademiaLeaderboards.SetPlayerNameAsync(result.ScoreId, "MAL");
+if (!named.Success) Console.WriteLine(named.Message);
+```
+
+The same name rules apply as for `SubmitScoreAsync`, and `named.PlayerName`
+is the name as it was saved. `Status` is `"saved"`, `"queued"` (the score
+is still waiting to upload on a cabinet that's offline, and the new name
+will go with it), `"rejected"` or `"error"`. Scores that have been
+claimed can't be renamed, since they already show the account's
+username.
+
+### `RequestClaimAsync(scoreId, onClaimLink = null, cancellationToken = default)` (returns `Task<ClaimResult>`)
+Lets the player save a score to their Arcademia account instead of typing
+a name. On a cabinet, the launcher shows a QR code. The call won't return
+until the player scans it, cancels, or about five minutes pass, so call
+it from an `async void` handler rather than your main update loop.
 
 ```csharp
 var claim = await ArcademiaLeaderboards.RequestClaimAsync(result.ScoreId);
 switch (claim.Status)
 {
-    case "saved":     Console.WriteLine("Saved to your account!"); break;
-    case "cancelled": Console.WriteLine("Cancelled.");              break;
-    case "expired":   Console.WriteLine("Timed out.");              break;
-    default:          Console.WriteLine("Couldn't save right now."); break;
+    case "saved":     ShowMessage($"Saved as {claim.PlayerName}!"); break;
+    case "cancelled": ShowMessage("Cancelled.");                   break;
+    case "expired":   ShowMessage("Timed out.");                   break;
+    default:          ShowMessage("Couldn't save right now.");     break;
 }
 ```
 
-This only really means anything in launcher mode. In sandbox mode it just
-returns immediately with `Status = "rejected"`, since there's no cabinet
-to show a QR code on and test scores can't be claimed anyway. Feel free
-to call it unconditionally; it's a safe no-op outside the machine.
+When the claim succeeds, `claim.PlayerName` is the player's Arcademia
+username. Show that in your game rather than asking for a name.
+
+In sandbox mode there's no cabinet to show a QR code on, so you get a
+link instead. It's passed to `onClaimLink` and also written to the log.
+Open it in your browser, sign in, and save the score, and the call
+returns just like it would on a cabinet. You can pass a
+`CancellationToken` to give up early, which cancels the link.
+
+```csharp
+var claim = await ArcademiaLeaderboards.RequestClaimAsync(
+    result.ScoreId,
+    url => Console.WriteLine("Claim it here: " + url));
+```
 
 ### `GetScoresAsync(boardSlug, query = null)` (returns `Task<ScoresResult>`)
 Loads a leaderboard to show in your game. You decide what comes back:
@@ -227,8 +297,9 @@ order), `Player` (the player's own row, or `null` if you didn't pass a
 score id or it isn't in this scope), `Around` (the player and their
 neighbours, in rank order), `Total` (how many ranked entries the scope
 has), and `Scope`. Each `BoardScore` has `Rank`, `PlayerName`, `Value`,
-`AchievedAt`, `Claimed`, `IsPlayer`, `MachineName`, `SiteName` and
-`Country`.
+`AchievedAt`, `Claimed`, `IsPlayer`, `MachineName`, `SiteName`,
+`Country` and `Metadata`. `Claimed` is `true` when `PlayerName` is a
+verified Arcademia username, and `false` when it was typed in a game.
 
 For a quick top ten there's a shorter overload:
 
@@ -256,6 +327,27 @@ Each scope is its own request and can fail on its own, so check
 In sandbox mode these calls read your test scores. Test scores don't
 come from a cabinet, so every scope returns the same list, but the
 request and the result look exactly the same as they will on a cabinet.
+
+### Metadata
+
+Anything you pass as `metadataJson` when submitting comes back on every
+score you read, as `BoardScore.Metadata`. It's the same JSON object as a
+string (the server may tidy up the spacing), or `null` if the score had
+none. Turn it back into your own type to use it:
+
+```csharp
+class RunInfo { public string level { get; set; } public string character { get; set; } }
+
+foreach (var s in board.Scores)
+{
+    var info = string.IsNullOrEmpty(s.Metadata) ? null : JsonSerializer.Deserialize<RunInfo>(s.Metadata);
+    Console.WriteLine($"#{s.Rank} {s.PlayerName} {s.Value} on {info?.level}");
+}
+```
+
+In "best per player" mode, each player's row is their best score, so its
+metadata comes from that run. Metadata is only returned to your game. It
+isn't shown on the public Arcademia leaderboard pages.
 
 ### `GetTestScoresAsync(boardSlug, limit = 25, offset = 0)` (returns `Task<TestScoresResult>`)
 Reads back scores from the sandbox test area, i.e. whatever you or
